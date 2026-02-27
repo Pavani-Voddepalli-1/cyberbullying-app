@@ -1,114 +1,105 @@
 import streamlit as st
-import pandas as pd
-import re
-import nltk
-import time
-from nltk.corpus import stopwords
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+import torch
+import numpy as np
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch.nn.functional as F
 
-nltk.download('stopwords')
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(
+    page_title="Cyberbullying Detection System",
+    page_icon="🛡️",
+    layout="centered"
+)
 
-# ---------------------------
-# Page Config
-# ---------------------------
-st.set_page_config(page_title="Cyberbullying Detector", page_icon="🛡️", layout="centered")
-
-# Custom CSS for animations
+# ---------------- STYLING ----------------
 st.markdown("""
-    <style>
-    .main {
-        background-color: #f5f7fa;
-    }
-    .stButton>button {
-        background-color: #4CAF50;
-        color: white;
-        border-radius: 8px;
-        height: 3em;
-        width: 100%;
-    }
-    </style>
+<style>
+body {
+    background: linear-gradient(to right, #f8fafc, #eef2f7);
+}
+.main {
+    background-color: #ffffff;
+    padding: 2rem;
+    border-radius: 15px;
+}
+.metric-box {
+    padding: 15px;
+    border-radius: 10px;
+    text-align: center;
+    font-weight: bold;
+}
+.safe-box {
+    background-color: #e6f4ea;
+    color: #1b5e20;
+}
+.bully-box {
+    background-color: #fdecea;
+    color: #b71c1c;
+}
+</style>
 """, unsafe_allow_html=True)
 
-# ---------------------------
-# Load Dataset
-# ---------------------------
-data = pd.read_csv("cyberbullying_dataset.csv")
+# ---------------- TITLE ----------------
+st.title("🛡️ Cyberbullying Detection System")
+st.write("AI-powered system to analyze text and detect harmful online content.")
 
-# ---------------------------
-# Preprocessing
-# ---------------------------
-def preprocess(text):
-    text = text.lower()
-    text = re.sub(r'[^a-zA-Z]', ' ', text)
-    words = text.split()
-    words = [w for w in words if w not in stopwords.words('english')]
-    return " ".join(words)
+# ---------------- LOAD MODEL ----------------
+@st.cache_resource
+def load_model():
+    model_name = "distilbert-base-uncased-finetuned-sst-2-english"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    return tokenizer, model
 
-data['clean_text'] = data['text'].apply(preprocess)
+tokenizer, model = load_model()
 
-# ---------------------------
-# TF-IDF + Logistic Regression
-# ---------------------------
-vectorizer = TfidfVectorizer()
-X = vectorizer.fit_transform(data['clean_text'])
-y = data['label']
+# ---------------- USER INPUT ----------------
+text = st.text_area("Enter Text to Analyze", height=150)
 
-model = LogisticRegression()
-model.fit(X, y)
+if st.button("Analyze Text"):
 
-# ---------------------------
-# UI
-# ---------------------------
-st.title("🛡️ Cyberbullying Detection App")
-st.write("Detect whether a sentence contains bullying content.")
-
-user_input = st.text_area("✍️ Enter a sentence")
-
-if st.button("🔍 Analyze Text"):
-
-    if user_input.strip() == "":
-        st.warning("Please enter some text.")
+    if text.strip() == "":
+        st.warning("Please enter valid text.")
     else:
-        with st.spinner("Analyzing..."):
-            time.sleep(1)
+        with st.spinner("Analyzing with Transformer model..."):
+            
+            inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+            outputs = model(**inputs)
+            probs = F.softmax(outputs.logits, dim=1)
+            probabilities = probs.detach().numpy()[0]
 
-        clean_input = preprocess(user_input)
-        vector_input = vectorizer.transform([clean_input])
+            negative_prob = float(probabilities[0])  # considered bullying
+            positive_prob = float(probabilities[1])  # considered safe
 
-        prediction = model.predict(vector_input)[0]
-        probabilities = model.predict_proba(vector_input)[0]
+            bullying_percent = round(negative_prob * 100, 2)
+            safe_percent = round(positive_prob * 100, 2)
 
-        bullying_index = list(model.classes_).index("bullying")
-        safe_index = list(model.classes_).index("not_bullying")
+        st.subheader("Prediction Results")
 
-        bullying_prob = probabilities[bullying_index]
-        safe_prob = probabilities[safe_index]
+        col1, col2 = st.columns(2)
 
-        bullying_percent = round(bullying_prob * 100, 2)
-        safe_percent = round(safe_prob * 100, 2)
+        with col1:
+            st.markdown(f"""
+            <div class="metric-box bully-box">
+                🚨 Bullying Probability<br>
+                {bullying_percent}%
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.subheader("📊 Prediction Result")
+        with col2:
+            st.markdown(f"""
+            <div class="metric-box safe-box">
+                ✅ Safe Probability<br>
+                {safe_percent}%
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Animated Progress Bars
-        bullying_bar = st.progress(0)
-        safe_bar = st.progress(0)
+        st.markdown("---")
 
-        for i in range(int(bullying_percent) + 1):
-            bullying_bar.progress(i)
-            time.sleep(0.01)
-
-        for i in range(int(safe_percent) + 1):
-            safe_bar.progress(i)
-            time.sleep(0.01)
-
-        st.write(f"🚨 **Bullying Probability:** {bullying_percent}%")
-        st.write(f"✅ **Safe Probability:** {safe_percent}%")
-
-        # Final Result
-        if prediction == "bullying":
-            st.error("⚠️ This text is classified as Bullying.")
+        if bullying_percent > safe_percent:
+            st.error("⚠️ The text is likely to contain harmful or negative content.")
         else:
-            st.success("🎉 This text is classified as Safe.")
+            st.success("✅ The text appears safe and non-harmful.")
 
-        st.balloons()
+        confidence = max(bullying_percent, safe_percent)
+        st.info(f"Model Confidence: {confidence}%")
